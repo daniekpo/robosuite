@@ -73,6 +73,8 @@ class Keyboard(Device):
         self.last_drotation = np.zeros(3)
         self.pos = np.zeros(3)  # (x, y, z)
         self.last_pos = np.zeros(3)
+        # --- Recording state for demonstration collection ---
+        self.recording_state = "paused"  # can be 'recording', 'paused', 'ended', 'restarting'
 
     def start_control(self):
         """
@@ -174,6 +176,25 @@ class Keyboard(Device):
             elif key.char == "b":
                 self.base_modes[self.active_robot] = not self.base_modes[self.active_robot]  # toggle mobile base
 
+            # controls for demonstration recording
+            if hasattr(key, 'char'):
+                if key.char == "s":
+                    if self.recording_state != "recording":
+                        self.recording_state = "recording"
+                        print("[Keyboard] Recording resumed. Press 'p' to pause, 'e' to end, 'r' to restart.")
+                elif key.char == "p":
+                    if self.recording_state != "paused":
+                        self.recording_state = "paused"
+                        print("[Keyboard] Recording paused. Press 's' to resume, 'r' to restart, 'e' to end.")
+                elif key.char == "r":
+                    self.recording_state = "restarting"
+                    print("[Keyboard] Recording restarted. Previous data cleared. Press 's' to start recording.")
+                elif key.char == "e":
+                    self.recording_state = "ended"
+                    print("[Keyboard] Recording ended. Saving demonstration and exiting.")
+                elif key.char == "x":
+                    print("[Keyboard] Save snapshot requested (not implemented, placeholder).")
+
             # user-commanded reset
             elif key.char == "q":
                 self._reset_state = 1
@@ -197,3 +218,9 @@ class Keyboard(Device):
         drotation = np.clip(drotation, -1, 1)
 
         return dpos, drotation
+
+    def get_recording_state(self):
+        return self.recording_state
+
+    def clear_recording_state(self):
+        self.recording_state = "paused"

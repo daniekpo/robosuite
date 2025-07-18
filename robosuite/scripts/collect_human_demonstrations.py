@@ -52,7 +52,7 @@ def collect_human_trajectory(env, device, arm, max_fr):
         for robot in env.robots
     ]
 
-    # Loop until we get a reset from the input or the task completes
+    recording = False
     while True:
         start = time.time()
 
@@ -66,32 +66,52 @@ def collect_human_trajectory(env, device, arm, max_fr):
         if input_ac_dict is None:
             break
 
-        from copy import deepcopy
+        # --- Recording state logic ---
+        rec_state = getattr(device, 'get_recording_state', lambda: 'recording')()
+        if rec_state == "recording":
+            # Normal data collection step
+            from copy import deepcopy
+            action_dict = deepcopy(input_ac_dict)
+            # set arm actions
+            for arm in active_robot.arms:
+                if isinstance(active_robot.composite_controller, WholeBody):  # input type passed to joint_action_policy
+                    controller_input_type = active_robot.composite_controller.joint_action_policy.input_type
+                else:
+                    controller_input_type = active_robot.part_controllers[arm].input_type
 
-        action_dict = deepcopy(input_ac_dict)  # {}
-        # set arm actions
-        for arm in active_robot.arms:
-            if isinstance(active_robot.composite_controller, WholeBody):  # input type passed to joint_action_policy
-                controller_input_type = active_robot.composite_controller.joint_action_policy.input_type
-            else:
-                controller_input_type = active_robot.part_controllers[arm].input_type
+                if controller_input_type == "delta":
+                    action_dict[arm] = input_ac_dict[f"{arm}_delta"]
+                elif controller_input_type == "absolute":
+                    action_dict[arm] = input_ac_dict[f"{arm}_abs"]
+                else:
+                    raise ValueError
 
-            if controller_input_type == "delta":
-                action_dict[arm] = input_ac_dict[f"{arm}_delta"]
-            elif controller_input_type == "absolute":
-                action_dict[arm] = input_ac_dict[f"{arm}_abs"]
-            else:
-                raise ValueError
+            # Maintain gripper state for each robot but only update the active robot with action
+            env_action = [robot.create_action_vector(all_prev_gripper_actions[i]) for i, robot in enumerate(env.robots)]
+            env_action[device.active_robot] = active_robot.create_action_vector(action_dict)
+            env_action = np.concatenate(env_action)
+            for gripper_ac in all_prev_gripper_actions[device.active_robot]:
+                all_prev_gripper_actions[device.active_robot][gripper_ac] = action_dict[gripper_ac]
 
-        # Maintain gripper state for each robot but only update the active robot with action
-        env_action = [robot.create_action_vector(all_prev_gripper_actions[i]) for i, robot in enumerate(env.robots)]
-        env_action[device.active_robot] = active_robot.create_action_vector(action_dict)
-        env_action = np.concatenate(env_action)
-        for gripper_ac in all_prev_gripper_actions[device.active_robot]:
-            all_prev_gripper_actions[device.active_robot][gripper_ac] = action_dict[gripper_ac]
-
-        env.step(env_action)
-        env.render()
+            env.step(env_action)
+            env.render()
+        elif rec_state == "paused":
+            # Only render, do not record or step
+            env.render()
+            continue
+        elif rec_state == "restarting":
+            # Clear buffers and reset environment
+            print("[Main] Restarting demonstration: clearing buffers and resetting environment.")
+            if hasattr(env, 'states'):
+                env.states = []
+            if hasattr(env, 'action_infos'):
+                env.action_infos = []
+            env.reset()
+            device.clear_recording_state()
+            continue
+        elif rec_state == "ended":
+            print("[Main] Ending demonstration and saving.")
+            break
 
         # Also break if we complete the task
         if task_completion_hold_count == 0:
@@ -117,7 +137,7 @@ def collect_human_trajectory(env, device, arm, max_fr):
     env.close()
 
 
-def gather_demonstrations_as_hdf5(directory, out_dir, env_info):
+def gather_demonstrations_as_hdf5(directory, out_dir, env_info, ignore_success=False):
     """
     Gathers the demonstrations saved in @directory into a
     single hdf5 file.
@@ -173,7 +193,7 @@ def gather_demonstrations_as_hdf5(directory, out_dir, env_info):
             continue
 
         # Add only the successful demonstration to dataset
-        if success:
+        if success or ignore_success:
             print("Demonstration is successful and has been saved")
             # Delete the last state. This is because when the DataCollector wrapper
             # recorded the states and actions, the states were recorded AFTER playing that action,
@@ -365,6 +385,11 @@ if __name__ == "__main__":
     os.makedirs(new_dir)
 
     # collect demonstrations
+    demo_counter = 1
     while True:
+        print(f"[Main] Starting demonstration {demo_counter}. Press 's' to start recording.")
         collect_human_trajectory(env, device, args.arm, args.max_fr)
         gather_demonstrations_as_hdf5(tmp_directory, new_dir, env_info)
+        print(f"[Main] Demonstration {demo_counter} saved.")
+        demo_counter += 1
+        # Ask user if they want to continue or break (optional, or just loop)
